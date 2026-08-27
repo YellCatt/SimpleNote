@@ -1,49 +1,202 @@
-name: Build and Push to GHCR
+name: Build and Release
 
 on:
   push:
-    branches: ["main"]
+    branches: [ main ]
     tags:
       - "v*"
-
-env:
-  REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
+  workflow_dispatch:
 
 jobs:
-  build-and-push-image:
+  test:
+    name: Test
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: go test ./...
+
+  build:
+    name: Build ${{ matrix.target.suffix }}
+    needs: test
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        target:
+          - os: linux
+            arch: mipsle
+            suffix: linux_mipsle
+            goflags: CGO_ENABLED=0 GOOS=linux GOARCH=mipsle GOMIPS=softfloat
+            ldflags: "-s -w -extldflags=-static"
+            tags: "netgo osusergo"
+          - os: linux
+            arch: amd64
+            suffix: linux_amd64
+            goflags: GOOS=linux GOARCH=amd64
+            ldflags: "-s -w"
+            tags: ""
+          - os: linux
+            arch: arm64
+            suffix: linux_arm64
+            goflags: GOOS=linux GOARCH=arm64
+            ldflags: "-s -w"
+            tags: ""
+          - os: darwin
+            arch: amd64
+            suffix: darwin_amd64
+            goflags: GOOS=darwin GOARCH=amd64
+            ldflags: "-s -w"
+            tags: ""
+          - os: darwin
+            arch: arm64
+            suffix: darwin_arm64
+            goflags: GOOS=darwin GOARCH=arm64
+            ldflags: "-s -w"
+            tags: ""
+          - os: windows
+            arch: amd64
+            suffix: windows_amd64
+            goflags: GOOS=windows GOARCH=amd64
+            ldflags: "-s -w"
+            tags: ""
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Log in to the Container registry
-        uses: docker/login-action@v3
+      - uses: actions/setup-go@v5
         with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          go-version-file: go.mod
+          cache: true
 
-      - name: Extract metadata (tags, labels) for Docker
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          tags: |
-            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
-            type=sha,format=long,enable=${{ github.ref == 'refs/heads/main' }}
-            type=ref,event=tag
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
+      - name: Build for ${{ matrix.target.os }}/${{ matrix.target.arch }}
+        shell: bash
+        run: |
+          set -euo pipefail
 
-      - name: Build and push Docker image
-        uses: docker/build-push-action@v6
+          binary_name="simplenote"
+          if [ "${{ matrix.target.os }}" = "windows" ]; then
+            binary_name="${binary_name}.exe"
+          fi
+
+          out_dir="dist/simplenote_${{ matrix.target.suffix }}"
+          mkdir -p "${out_dir}"
+
+          build_cmd="${{ matrix.target.goflags }} go build -trimpath -ldflags=\"${{ matrix.target.ldflags }}\""
+          if [ -n "${{ matrix.target.tags }}" ]; then
+            build_cmd="${build_cmd} -tags=\"${{ matrix.target.tags }}\""
+          fi
+          build_cmd="${build_cmd} -o ${out_dir}/${binary_name} ."
+
+          echo "Running: ${build_cmd}"
+          eval "${build_cmd}"
+
+          cp -R public "${out_dir}/public"
+          cp -R views "${out_dir}/views"
+          cp README.md LICENSE "${out_dir}/"
+
+          ls -la "${out_dir}"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
         with:
-          context: .
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          name: simplenote_${{ matrix.target.suffix }}
+          path: dist/simplenote_${{ matrix.target.suffix }}
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Package archives
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd artifacts
+          for dir in simplenote_*/; do
+            dir="${dir%/}"
+            if [[ "${dir}" == *"windows"* ]]; then
+              zip -r "${dir}.zip" "${dir}"
+            else
+              tar -czf "${dir}.tar.gz" "${dir}"
+            fi
+          done
+
+          sha256sum *.tar.gz *.zip > SHA256SUMS.txt
+          ls -la
+
+      - name: Create Dev Release (main branch)
+        if: github.ref == 'refs/heads/main'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="dev-latest"
+
+          gh release delete "$VERSION" --yes 2>/dev/null || true
+          git push origin ":refs/tags/${VERSION}" 2>/dev/null || true
+
+          gh release create "$VERSION" \
+            --title "Development Build (Latest)" \
+            --notes "Automatic build from commit ${{ github.sha }}%0A%0A**Platforms:**%0A- Linux amd64 / arm64 / mipsle%0A- macOS amd64 / arm64%0A- Windows amd64" \
+            --prerelease \
+            artifacts/*.tar.gz artifacts/*.zip artifacts/SHA256SUMS.txt
+
+      - name: Create Tagged Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          VERSION="${{ github.ref_name }}"
+
+          previous_tag="$(git describe --tags --abbrev=0 "${VERSION}^" 2>/dev/null || true)"
+          if [ -n "${previous_tag}" ]; then
+            commit_range="${previous_tag}..${VERSION}"
+            release_range="${previous_tag} -> ${VERSION}"
+          else
+            commit_range="${VERSION}"
+            release_range="Initial release"
+          fi
+
+          commit_notes="$(git log "${commit_range}" --pretty=format:'- %s (%h)' || true)"
+          if [ -z "${commit_notes}" ]; then
+            commit_notes="- No commits available"
+          fi
+
+          cat > /tmp/RELEASE_NOTES.md <<EOF
+          ## SimpleNote ${VERSION}
+
+          **Range:** ${release_range}
+
+          **Commits:**
+          ${commit_notes}
+
+          **Platforms:**
+          - Linux amd64 / arm64 / mipsle
+          - macOS amd64 / arm64
+          - Windows amd64
+
+          Download the archive for your platform. The binary must be run alongside the \`public/\` and \`views/\` directories included in the archive.
+          Checksums are available in \`SHA256SUMS.txt\`.
+          EOF
+
+          gh release create "$VERSION" \
+            --title "SimpleNote ${VERSION}" \
+            --notes-file /tmp/RELEASE_NOTES.md \
+            artifacts/*.tar.gz artifacts/*.zip artifacts/SHA256SUMS.txt
