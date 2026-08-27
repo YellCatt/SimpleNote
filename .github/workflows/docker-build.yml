@@ -170,6 +170,9 @@ jobs:
           gh release delete "$VERSION" --yes 2>/dev/null || true
           git push origin ":refs/tags/${VERSION}" 2>/dev/null || true
 
+          git tag -f "$VERSION"
+          git push origin "$VERSION" --force
+
           gh release create "$VERSION" \
             --title "Development Build (Latest)" \
             --notes "Automatic build from commit ${{ github.sha }}%0A%0A**Platforms:**%0A- Linux amd64 / arm64 / mipsle%0A- macOS amd64 / arm64%0A- Windows amd64" \
