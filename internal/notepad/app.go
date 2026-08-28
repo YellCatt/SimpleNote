@@ -3,7 +3,6 @@ package notepad
 import (
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 )
@@ -11,30 +10,34 @@ import (
 func Run() error {
 	baseDir := detectBaseDir()
 
-	app, err := newApp(baseDir)
+	cfg, err := LoadConfig(baseDir)
+	if err != nil {
+		return err
+	}
+
+	app, err := newApp(baseDir, cfg)
 	if err != nil {
 		return err
 	}
 
 	router := newRouter(app, baseDir)
-	port := envOrDefault("PORT", defaultPort)
-	return router.Run(":" + port)
+	return router.Run(":" + cfg.Server.Port)
 }
 
-func newApp(baseDir string) (*App, error) {
-	jwtSecret := strings.TrimSpace(os.Getenv("JWT_SECRET"))
+func newApp(baseDir string, cfg *Config) (*App, error) {
+	jwtSecret := strings.TrimSpace(cfg.Auth.JWTSecret)
 	if jwtSecret == "" {
-		return nil, errors.New("JWT_SECRET is required")
+		return nil, errors.New("auth.jwt_secret is empty")
 	}
 
-	sessionTTL, err := parseJWTExpiresIn(envOrDefault("JWT_SESSION_EXPIRES_IN", defaultSessionExpiresIn))
+	sessionTTL, err := parseJWTExpiresIn(cfg.Auth.SessionExpiresIn)
 	if err != nil {
-		return nil, fmt.Errorf("parse JWT_SESSION_EXPIRES_IN: %w", err)
+		return nil, fmt.Errorf("parse auth.session_expires_in: %w", err)
 	}
 
-	rememberTTL, err := parseJWTExpiresIn(envOrDefault("JWT_REMEMBER_EXPIRES_IN", defaultRememberExpiresIn))
+	rememberTTL, err := parseJWTExpiresIn(cfg.Auth.RememberExpiresIn)
 	if err != nil {
-		return nil, fmt.Errorf("parse JWT_REMEMBER_EXPIRES_IN: %w", err)
+		return nil, fmt.Errorf("parse auth.remember_expires_in: %w", err)
 	}
 
 	store := &Store{
@@ -49,7 +52,7 @@ func newApp(baseDir string) (*App, error) {
 
 	return &App{
 		store:       store,
-		password:    envOrDefault("PASSWORD", defaultPassword),
+		password:    cfg.Auth.Password,
 		jwtSecret:   []byte(jwtSecret),
 		sessionTTL:  sessionTTL,
 		rememberTTL: rememberTTL,

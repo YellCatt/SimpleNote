@@ -1,0 +1,8 @@
+server:
+  port: "3000"
+
+auth:
+  password: "password"
+  jwt_secret: ""
+  session_expires_in: "1d"
+  remember_expires_in: "30d"
