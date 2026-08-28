@@ -15,10 +15,14 @@ func (s *Store) bootstrap() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	logDebug("store bootstrap: notesDir=%s, uploadsDir=%s", s.notesDir, s.uploadsDir)
+
 	if err := s.ensureNotesDirLocked(); err != nil {
+		logError("ensure notes dir failed: %v", err)
 		return err
 	}
 	if err := os.MkdirAll(s.uploadsDir, 0o755); err != nil {
+		logError("ensure uploads dir failed: %v", err)
 		return err
 	}
 
@@ -46,6 +50,7 @@ func (s *Store) ensureLandingNote() (string, error) {
 	}
 	if len(meta.Notes) > 0 {
 		sorted := sortNotesByUpdatedAt(meta.Notes)
+		logDebug("landing note: %s (total: %d notes)", sorted[0].ID, len(meta.Notes))
 		return sorted[0].ID, nil
 	}
 
@@ -65,6 +70,7 @@ func (s *Store) ensureLandingNote() (string, error) {
 		return "", err
 	}
 
+	logDebug("created landing note: %s", note.ID)
 	return note.ID, nil
 }
 
@@ -79,14 +85,17 @@ func (s *Store) getNoteContent(id string) (Note, string, bool, error) {
 
 	index := findNoteIndex(meta.Notes, id)
 	if index < 0 {
+		logDebug("note not found in meta: %s", id)
 		return Note{}, "", false, nil
 	}
 
 	content, err := s.readNoteContentLocked(id)
 	if err != nil {
+		logError("read note content failed: %s, err: %v", id, err)
 		return Note{}, "", false, err
 	}
 
+	logDebug("get note: %s, title=%s, contentLen=%d", id, meta.Notes[index].Title, len(content))
 	return meta.Notes[index], content, true, nil
 }
 
@@ -99,7 +108,9 @@ func (s *Store) listNotes() ([]Note, error) {
 		return nil, err
 	}
 
-	return sortNotesByUpdatedAt(meta.Notes), nil
+	sorted := sortNotesByUpdatedAt(meta.Notes)
+	logDebug("list notes: total=%d", len(sorted))
+	return sorted, nil
 }
 
 func (s *Store) createNote(title string) (Note, error) {
@@ -120,14 +131,17 @@ func (s *Store) createNote(title string) (Note, error) {
 	}
 
 	if err := s.writeNoteLocked(note.ID, []byte("")); err != nil {
+		logError("write note file failed: %s, err: %v", note.ID, err)
 		return Note{}, err
 	}
 
 	meta.Notes = append(meta.Notes, note)
 	if err := s.writeMetaLocked(meta); err != nil {
+		logError("write meta after create failed: %v", err)
 		return Note{}, err
 	}
 
+	logDebug("create note: %s, title=%s, total=%d", note.ID, note.Title, len(meta.Notes))
 	return note, nil
 }
 
@@ -142,25 +156,30 @@ func (s *Store) deleteNote(id string) (bool, error) {
 
 	index := findNoteIndex(meta.Notes, id)
 	if index < 0 {
+		logDebug("delete note not found: %s", id)
 		return false, nil
 	}
 
 	note := meta.Notes[index]
 	for _, filename := range note.Attachments {
 		if err := s.deleteAttachmentLocked(filename); err != nil {
+			logError("delete attachment failed: %s, err: %v", filename, err)
 			return false, err
 		}
 	}
 
 	meta.Notes = append(meta.Notes[:index], meta.Notes[index+1:]...)
 	if err := s.writeMetaLocked(meta); err != nil {
+		logError("write meta after delete failed: %v", err)
 		return false, err
 	}
 
 	if err := os.Remove(s.notePath(id)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		logError("remove note file failed: %s, err: %v", id, err)
 		return false, err
 	}
 
+	logDebug("delete note: %s, wasTitle=%s, remaining=%d", id, note.Title, len(meta.Notes))
 	return true, nil
 }
 
@@ -198,10 +217,12 @@ func (s *Store) saveNoteContent(id, content string) (bool, error) {
 
 	index := findNoteIndex(meta.Notes, id)
 	if index < 0 {
+		logDebug("save note not found: %s", id)
 		return false, nil
 	}
 
 	if err := s.writeNoteLocked(id, []byte(content)); err != nil {
+		logError("write note content failed: %s, err: %v", id, err)
 		return false, err
 	}
 
@@ -210,6 +231,7 @@ func (s *Store) saveNoteContent(id, content string) (bool, error) {
 	for _, filename := range oldAttachments {
 		if !containsString(currentAttachments, filename) {
 			if err := s.deleteAttachmentLocked(filename); err != nil {
+				logError("delete stale attachment failed: %s, err: %v", filename, err)
 				return false, err
 			}
 		}
@@ -218,9 +240,11 @@ func (s *Store) saveNoteContent(id, content string) (bool, error) {
 	meta.Notes[index].Attachments = currentAttachments
 	markNoteAsEdited(&meta.Notes[index])
 	if err := s.writeMetaLocked(meta); err != nil {
+		logError("write meta after save failed: %v", err)
 		return false, err
 	}
 
+	logDebug("save note: %s, contentLen=%d, attachments=%d", id, len(content), len(currentAttachments))
 	return true, nil
 }
 
@@ -235,10 +259,12 @@ func (s *Store) addAttachment(noteID, filename string) error {
 
 	index := findNoteIndex(meta.Notes, noteID)
 	if index < 0 {
+		logDebug("add attachment: note not found %s", noteID)
 		return nil
 	}
 
 	meta.Notes[index].Attachments = append(meta.Notes[index].Attachments, filename)
+	logDebug("add attachment: note=%s, file=%s", noteID, filename)
 	return s.writeMetaLocked(meta)
 }
 
@@ -248,10 +274,13 @@ func (s *Store) migrateOldNotesLocked() error {
 		return err
 	}
 	if meta.Migrated {
+		logDebug("old notes migration: already migrated, skip")
 		return nil
 	}
 
+	logInfo("starting old notes migration...")
 	baseTime := time.Now().UnixMilli()
+	migratedCount := 0
 	for i := 1; i <= 8; i++ {
 		oldPath := filepath.Join(s.notesDir, fmt.Sprintf("%d.txt", i))
 		content, err := os.ReadFile(oldPath)
@@ -275,6 +304,7 @@ func (s *Store) migrateOldNotesLocked() error {
 				CreatedAt: timestamp,
 				UpdatedAt: timestamp,
 			})
+			migratedCount++
 		}
 
 		if err := os.Remove(oldPath); err != nil {
@@ -283,7 +313,12 @@ func (s *Store) migrateOldNotesLocked() error {
 	}
 
 	meta.Migrated = true
-	return s.writeMetaLocked(meta)
+	if err := s.writeMetaLocked(meta); err != nil {
+		return err
+	}
+
+	logInfo("old notes migration done, migrated %d notes", migratedCount)
+	return nil
 }
 
 func (s *Store) readMetaLocked() (Meta, error) {

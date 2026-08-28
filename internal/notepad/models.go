@@ -12,9 +12,14 @@ const (
 	defaultPassword            = "asd123456"
 	defaultSessionExpiresIn    = "1d"
 	defaultRememberExpiresIn   = "30d"
+	defaultLogLevel            = "debug"
 	rememberCookieMaxAgeSecond = 30 * 24 * 60 * 60
 	maxUploadSize              = 10 * 1024 * 1024
 	authCookieName             = "auth_token"
+
+	logLevelDebug = "debug"
+	logLevelInfo  = "info"
+	logLevelError = "error"
 )
 
 var (

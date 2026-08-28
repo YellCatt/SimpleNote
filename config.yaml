@@ -6,3 +6,6 @@ auth:
   jwt_secret: ""
   session_expires_in: "1d"
   remember_expires_in: "30d"
+
+log:
+  level: "debug"

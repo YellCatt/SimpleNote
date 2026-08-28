@@ -13,6 +13,7 @@ func (a *App) requireAuth() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		claims := a.claimsFromContext(c)
 		if claims == nil {
+			logDebug("auth required but no valid token from %s, path=%s", c.ClientIP(), c.Request.URL.Path)
 			if wantsJSON(c) {
 				c.JSON(http.StatusUnauthorized, gin.H{"success": false, "message": "Unauthorized"})
 			} else {
@@ -22,6 +23,7 @@ func (a *App) requireAuth() gin.HandlerFunc {
 			return
 		}
 
+		logDebug("auth passed from %s, path=%s", c.ClientIP(), c.Request.URL.Path)
 		c.Set("user", claims)
 		c.Next()
 	}
@@ -30,6 +32,7 @@ func (a *App) requireAuth() gin.HandlerFunc {
 func (a *App) claimsFromContext(c *gin.Context) jwt.MapClaims {
 	cookie, err := c.Request.Cookie(authCookieName)
 	if err != nil {
+		logDebug("no auth cookie from %s", c.ClientIP())
 		return nil
 	}
 
@@ -48,13 +51,17 @@ func (a *App) verifyAuthToken(tokenString string) jwt.MapClaims {
 		return a.jwtSecret, nil
 	}, jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Alg()}))
 	if err != nil || !token.Valid {
+		logDebug("token verification failed: %v", err)
 		return nil
 	}
 
 	claims, ok := token.Claims.(jwt.MapClaims)
 	if !ok {
+		logDebug("token claims type assertion failed")
 		return nil
 	}
+
+	logDebug("token verified, exp=%v", claims["exp"])
 	return claims
 }
 
