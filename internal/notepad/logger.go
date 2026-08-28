@@ -2,6 +2,7 @@ package notepad
 
 import (
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
@@ -26,7 +27,7 @@ func InitLogger(baseDir string) error {
 		return fmt.Errorf("open log file: %w", err)
 	}
 
-	appLog = log.New(os.MultiWriter(logFile, os.Stdout), "", 0)
+	appLog = log.New(io.MultiWriter(logFile, os.Stdout), "", 0)
 	return nil
 }
 
