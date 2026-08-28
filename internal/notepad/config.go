@@ -29,13 +29,31 @@ type AuthConfig struct {
 func LoadConfig(baseDir string) (*Config, error) {
 	configPath := filepath.Join(baseDir, "config.yaml")
 
+	cfg := &Config{}
+
+	if _, err := os.Stat(configPath); os.IsNotExist(err) {
+		secret, err := generateSecret()
+		if err != nil {
+			return nil, fmt.Errorf("generate jwt_secret: %w", err)
+		}
+		cfg.Server.Port = defaultPort
+		cfg.Auth.Password = defaultPassword
+		cfg.Auth.JWTSecret = secret
+		cfg.Auth.SessionExpiresIn = defaultSessionExpiresIn
+		cfg.Auth.RememberExpiresIn = defaultRememberExpiresIn
+
+		if err := writeConfig(configPath, cfg); err != nil {
+			return nil, fmt.Errorf("write config.yaml: %w", err)
+		}
+		return cfg, nil
+	}
+
 	data, err := os.ReadFile(configPath)
 	if err != nil {
 		return nil, fmt.Errorf("read config.yaml: %w", err)
 	}
 
-	var cfg Config
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
+	if err := yaml.Unmarshal(data, cfg); err != nil {
 		return nil, fmt.Errorf("parse config.yaml: %w", err)
 	}
 
@@ -57,7 +75,7 @@ func LoadConfig(baseDir string) (*Config, error) {
 		cfg.Auth.RememberExpiresIn = defaultRememberExpiresIn
 		changed = true
 	}
-	if cfg.Auth.JWTSecret == "" || cfg.Auth.JWTSecret == "change_me_to_a_random_secret_key" {
+	if cfg.Auth.JWTSecret == "" {
 		secret, err := generateSecret()
 		if err != nil {
 			return nil, fmt.Errorf("generate jwt_secret: %w", err)
@@ -67,12 +85,12 @@ func LoadConfig(baseDir string) (*Config, error) {
 	}
 
 	if changed {
-		if err := writeConfig(configPath, &cfg); err != nil {
+		if err := writeConfig(configPath, cfg); err != nil {
 			return nil, fmt.Errorf("write config.yaml: %w", err)
 		}
 	}
 
-	return &cfg, nil
+	return cfg, nil
 }
 
 func generateSecret() (string, error) {

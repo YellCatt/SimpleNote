@@ -8,8 +8,8 @@ import (
 
 const (
 	appName                    = "简单笔记"
-	defaultPort                = "3000"
-	defaultPassword            = "password"
+	defaultPort                = "3001"
+	defaultPassword            = "asd123456"
 	defaultSessionExpiresIn    = "1d"
 	defaultRememberExpiresIn   = "30d"
 	rememberCookieMaxAgeSecond = 30 * 24 * 60 * 60
